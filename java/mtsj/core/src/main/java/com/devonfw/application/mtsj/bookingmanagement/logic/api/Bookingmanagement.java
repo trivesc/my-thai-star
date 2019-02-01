@@ -154,4 +154,6 @@ public interface Bookingmanagement {
 
   String buildToken(String email, String type) throws NoSuchAlgorithmException;
 
+  boolean validateCancellationAndDeleteOrder(Long orderId);
+
 }

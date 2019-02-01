@@ -24,6 +24,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.devonfw.application.mtsj.bookingmanagement.common.api.datatype.BookingType;
 import com.devonfw.application.mtsj.bookingmanagement.common.api.exception.CancelInviteNotAllowedException;
 import com.devonfw.application.mtsj.bookingmanagement.dataaccess.api.BookingEntity;
 import com.devonfw.application.mtsj.bookingmanagement.dataaccess.api.InvitedGuestEntity;
@@ -42,6 +43,11 @@ import com.devonfw.application.mtsj.bookingmanagement.logic.api.to.TableSearchCr
 import com.devonfw.application.mtsj.general.common.api.constants.Roles;
 import com.devonfw.application.mtsj.general.logic.base.AbstractComponentFacade;
 import com.devonfw.application.mtsj.mailservice.Mail;
+import com.devonfw.application.mtsj.ordermanagement.common.api.exception.CancelNotAllowedException;
+import com.devonfw.application.mtsj.ordermanagement.common.api.exception.NoBookingException;
+import com.devonfw.application.mtsj.ordermanagement.common.api.exception.NoInviteException;
+import com.devonfw.application.mtsj.ordermanagement.common.api.exception.OrderAlreadyExistException;
+import com.devonfw.application.mtsj.ordermanagement.common.api.exception.WrongTokenException;
 import com.devonfw.application.mtsj.ordermanagement.logic.api.Ordermanagement;
 import com.devonfw.application.mtsj.ordermanagement.logic.api.to.OrderCto;
 import com.devonfw.application.mtsj.ordermanagement.logic.api.to.OrderEto;
@@ -548,15 +554,7 @@ public class BookingmanagementImpl extends AbstractComponentFacade implements Bo
     }
   }
 
-  /**
-   * Returns the field 'tableDao'.
-   *
-   * @return the {@link TableDao} instance.
-   */
-  public TableRepository getTableDao() {
 
-    return this.tableDao;
-  }
 
   private boolean cancelInviteAllowed(BookingEto booking) {
 
@@ -567,4 +565,128 @@ public class BookingmanagementImpl extends AbstractComponentFacade implements Bo
     return (now > cancellationLimit) ? false : true;
   }
 
+
+
+  @Override
+  public boolean validateCancellationAndDeleteOrder(Long orderId) {
+
+	 OrderEto orderEto = this.orderManagement.findOrderEto(orderId);
+
+    if (!cancellationAllowed(orderEto)) {
+      throw new CancelNotAllowedException();
+    }
+
+    return this.orderManagement.deleteOrder(orderId);
+
+  }
+
+
+  public OrderEto validateAndSaveOrder(String token, OrderCto orderCto) {
+
+		if (getOrderType(token) == BookingType.COMMON) {
+			BookingCto booking = findBookingByToken(token);
+			if (booking == null) {
+				throw new NoBookingException();
+			}
+			List<OrderCto> currentOrders = orderManagement.findOrders(booking.getBooking().getId());
+			if (!currentOrders.isEmpty()) {
+				throw new OrderAlreadyExistException();
+			}
+			orderCto.getOrder().setBookingId(booking.getBooking().getId());
+
+			// GUEST VALIDATION
+		} else if (getOrderType(token) == BookingType.INVITED) {
+
+			InvitedGuestEto guest = findInvitedGuestByToken(token);
+			if (guest == null) {
+				throw new NoInviteException();
+			}
+			List<OrderCto> currentGuestOrders = this.orderManagement.findOrdersByInvitedGuest(guest.getId());
+			if (!currentGuestOrders.isEmpty()) {
+				throw new OrderAlreadyExistException();
+			}
+			orderCto.getOrder().setBookingId(guest.getBookingId());
+			orderCto.getOrder().setInvitedGuestId(guest.getId());
+		}
+		OrderEto resultOrderEto = this.orderManagement.saveOrder(orderCto);
+
+		sendOrderConfirmationEmail(token, resultOrderEto);
+
+		return resultOrderEto;
+  }
+
+  private void sendOrderConfirmationEmail(String token, OrderEto order) {
+
+    Objects.requireNonNull(token, "token");
+    Objects.requireNonNull(order, "order");
+    try {
+      String emailTo = getBookingOrGuestEmail(token);
+      StringBuilder mailContent = new StringBuilder();
+
+      mailContent.append("MY THAI STAR").append("\n");
+      mailContent.append("Hi ").append(emailTo).append("\n");
+      mailContent.append("Your order has been created.").append("\n");
+      mailContent.append(this.orderManagement.getContentFormatedWithCost(order)).append("\n");
+      mailContent.append("\n").append("Link to cancel order: ");
+      String link = "http://localhost:" + this.clientPort + "/booking/cancelOrder/" + order.getId();
+      mailContent.append(link);
+      this.mailService.sendMail(emailTo, "Order confirmation", mailContent.toString());
+    } catch (Exception e) {
+      LOG.error("Email not sent. {}", e.getMessage());
+    }
+  }
+
+  private String getBookingOrGuestEmail(String token) {
+
+    // Get the Host email
+    if (getOrderType(token) == BookingType.COMMON) {
+      BookingCto booking = findBookingByToken(token);
+      if (booking == null) {
+        throw new NoBookingException();
+      }
+      return booking.getBooking().getEmail();
+
+      // Get the Guest email
+    } else if (getOrderType(token) == BookingType.INVITED) {
+
+      InvitedGuestEto guest = findInvitedGuestByToken(token);
+      if (guest == null) {
+        throw new NoInviteException();
+      }
+      return guest.getEmail();
+    } else {
+      return null;
+    }
+  }
+
+  private boolean cancellationAllowed(OrderEto orderEto) {
+
+	    BookingCto booking = findBooking(orderEto.getBookingId());
+	    Timestamp bookingTime = booking.getBooking().getBookingDate();
+	    Long bookingTimeMillis = bookingTime.getTime();
+	    Long cancellationLimit = bookingTimeMillis - (3600000 * this.hoursLimit);
+	    Long now = Timestamp.from(Instant.now()).getTime();
+
+	    return (now > cancellationLimit) ? false : true;
+  }
+
+  private BookingType getOrderType(String token) throws WrongTokenException {
+
+    if (token.startsWith("CB_")) {
+      return BookingType.COMMON;
+    } else if (token.startsWith("GB_")) {
+      return BookingType.INVITED;
+    } else {
+      throw new WrongTokenException();
+    }
+  }
+  /**
+   * Returns the field 'tableDao'.
+   *
+   * @return the {@link TableDao} instance.
+   */
+  public TableRepository getTableDao() {
+
+    return this.tableDao;
+  }
 }

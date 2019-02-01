@@ -24,6 +24,9 @@ public interface Ordermanagement {
    */
   OrderCto findOrder(Long id);
 
+
+  OrderEto findOrderEto(Long idOrder);
+
   /**
    * Returns a paginated list of Orders matching the search criteria. Needs Authorization.
    *
@@ -111,6 +114,14 @@ public interface Ordermanagement {
    * @param orderLine the {@link OrderLineEto} to create.
    * @return the new {@link OrderLineEto} that has been saved with ID and version.
    */
+
   OrderLineEto saveOrderLine(OrderLineEto orderLine);
+  /**
+   * Gets the content from the order and turns in to string
+   *
+   * @param order the {@link OrderEto} to get the content from.
+   * @return the String with the formated content from the order.
+   */
+  String getContentFormatedWithCost(OrderEto order);
 
 }
